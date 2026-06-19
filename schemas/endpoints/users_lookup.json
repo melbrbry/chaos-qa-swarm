@@ -1,0 +1,71 @@
+{
+  "endpoint": {
+    "method": "POST",
+    "path": "/api/users/lookup",
+    "summary": "Return the first user matching filter criteria"
+  },
+  "example_valid_payload": {
+    "filter": {
+      "field": "role",
+      "value": "admin"
+    },
+    "users": [
+      {
+        "id": 1,
+        "name": "Ada",
+        "role": "admin"
+      },
+      {
+        "id": 2,
+        "name": "Grace",
+        "role": "viewer"
+      }
+    ]
+  },
+  "request_schema": {
+    "$defs": {
+      "UserFilter": {
+        "description": "Filter criteria for locating a user record.",
+        "properties": {
+          "field": {
+            "description": "Key on the user object to compare",
+            "title": "Field",
+            "type": "string"
+          },
+          "value": {
+            "description": "Expected value for the filter field",
+            "title": "Value"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "title": "UserFilter",
+        "type": "object"
+      }
+    },
+    "description": "Request body for finding a user matching filter criteria.",
+    "properties": {
+      "filter": {
+        "$ref": "#/$defs/UserFilter",
+        "description": "Filter used to select a user"
+      },
+      "users": {
+        "description": "List of user records as arbitrary key-value objects",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": "Users",
+        "type": "array"
+      }
+    },
+    "required": [
+      "users",
+      "filter"
+    ],
+    "title": "UsersLookupRequest",
+    "type": "object"
+  }
+}

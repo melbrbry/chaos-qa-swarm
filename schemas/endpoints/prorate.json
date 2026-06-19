@@ -1,0 +1,87 @@
+{
+  "endpoint": {
+    "method": "POST",
+    "path": "/api/prorate",
+    "summary": "Distribute a total across weighted parts"
+  },
+  "example_valid_payload": {
+    "denominator": 4.0,
+    "parts": [
+      {
+        "label": "team_a",
+        "weight": 1.0
+      },
+      {
+        "label": "team_b",
+        "weight": 3.0
+      }
+    ],
+    "total": 100.0
+  },
+  "request_schema": {
+    "$defs": {
+      "ProratePart": {
+        "description": "A weighted portion of a total amount.",
+        "properties": {
+          "label": {
+            "description": "Identifier for this portion",
+            "title": "Label",
+            "type": "string"
+          },
+          "weight": {
+            "description": "Relative weight used in allocation",
+            "title": "Weight",
+            "type": "number"
+          }
+        },
+        "required": [
+          "label",
+          "weight"
+        ],
+        "title": "ProratePart",
+        "type": "object"
+      }
+    },
+    "description": "Request body for prorating a total across weighted parts.",
+    "properties": {
+      "denominator": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Optional explicit denominator; defaults to sum of weights when omitted",
+        "title": "Denominator"
+      },
+      "parts": {
+        "description": "Weighted parts that receive a share of the total",
+        "items": {
+          "$ref": "#/$defs/ProratePart"
+        },
+        "title": "Parts",
+        "type": "array"
+      },
+      "strict_zero_weights": {
+        "default": false,
+        "description": "Apply strict validation when all part weights are zero",
+        "title": "Strict Zero Weights",
+        "type": "boolean"
+      },
+      "total": {
+        "description": "Total amount to distribute",
+        "title": "Total",
+        "type": "number"
+      }
+    },
+    "required": [
+      "total",
+      "parts"
+    ],
+    "title": "ProrateRequest",
+    "type": "object"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "endpoint": {
+    "method": "POST",
+    "path": "/api/loyalty/score",
+    "summary": "Compute loyalty score from account tenure and base points"
+  },
+  "example_valid_payload": {
+    "account_type": "standard",
+    "base_points": 100,
+    "months_active": 12
+  },
+  "request_schema": {
+    "description": "Request body for computing a loyalty score.",
+    "properties": {
+      "account_type": {
+        "description": "Account classification label",
+        "title": "Account Type",
+        "type": "string"
+      },
+      "base_points": {
+        "description": "Base loyalty points before tenure adjustment",
+        "title": "Base Points",
+        "type": "integer"
+      },
+      "months_active": {
+        "description": "Number of months the account has been active",
+        "title": "Months Active",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "account_type",
+      "months_active",
+      "base_points"
+    ],
+    "title": "LoyaltyScoreRequest",
+    "type": "object"
+  }
+}

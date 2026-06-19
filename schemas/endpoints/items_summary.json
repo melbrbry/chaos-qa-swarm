@@ -1,0 +1,85 @@
+{
+  "endpoint": {
+    "method": "POST",
+    "path": "/api/items/summary",
+    "summary": "Compute mean or sum over numeric items"
+  },
+  "example_valid_payload": {
+    "items": [
+      {
+        "name": "alpha",
+        "value": 10.0
+      },
+      {
+        "name": "beta",
+        "value": 20.0
+      },
+      {
+        "name": "gamma",
+        "value": 30.0
+      }
+    ],
+    "operation": "mean"
+  },
+  "request_schema": {
+    "$defs": {
+      "ItemRecord": {
+        "description": "A named numeric value used in summary calculations.",
+        "properties": {
+          "name": {
+            "description": "Human-readable item label",
+            "title": "Name",
+            "type": "string"
+          },
+          "value": {
+            "description": "Numeric value associated with the item",
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "title": "ItemRecord",
+        "type": "object"
+      }
+    },
+    "description": "Request body for computing aggregate statistics over items.",
+    "properties": {
+      "adjustment_mode": {
+        "default": "standard",
+        "description": "Aggregation adjustment strategy",
+        "enum": [
+          "standard",
+          "normalized"
+        ],
+        "title": "Adjustment Mode",
+        "type": "string"
+      },
+      "items": {
+        "description": "Collection of items to summarize",
+        "items": {
+          "$ref": "#/$defs/ItemRecord"
+        },
+        "title": "Items",
+        "type": "array"
+      },
+      "operation": {
+        "description": "Aggregation operation to apply",
+        "enum": [
+          "mean",
+          "sum"
+        ],
+        "title": "Operation",
+        "type": "string"
+      }
+    },
+    "required": [
+      "items",
+      "operation"
+    ],
+    "title": "ItemsSummaryRequest",
+    "type": "object"
+  }
+}

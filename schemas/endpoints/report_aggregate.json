@@ -1,0 +1,46 @@
+{
+  "endpoint": {
+    "method": "POST",
+    "path": "/api/report/aggregate",
+    "summary": "Flatten nested groups and return aggregate metadata"
+  },
+  "example_valid_payload": {
+    "groups": [
+      [
+        1,
+        2
+      ],
+      [
+        3,
+        4,
+        5
+      ]
+    ],
+    "metric": "throughput"
+  },
+  "request_schema": {
+    "description": "Request body for aggregating nested group data.",
+    "properties": {
+      "groups": {
+        "description": "Nested lists of values grouped for aggregation",
+        "items": {
+          "items": {},
+          "type": "array"
+        },
+        "title": "Groups",
+        "type": "array"
+      },
+      "metric": {
+        "description": "Metric label included in the response",
+        "title": "Metric",
+        "type": "string"
+      }
+    },
+    "required": [
+      "groups",
+      "metric"
+    ],
+    "title": "ReportAggregateRequest",
+    "type": "object"
+  }
+}
