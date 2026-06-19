@@ -9,7 +9,7 @@
 | **Black-box fuzzing** | JSON Schema / OpenAPI | Mutates fields randomly against type constraints |
 | **White-box (this project)** | `target_app/` source code | Reads logic branches, hypothesizes compound payloads that execute vulnerable paths |
 
-Phase 1 delivers the target application layer. A future White-Box Chaos Agent will read [`target_app/`](target_app/) source, craft targeted payloads, and loop with a Judge and Developer Agent in later phases.
+Phase 1 delivers the target application layer. Phase 3 adds White-Box Chaos and Developer agents that read [`target_app/`](target_app/) source and craft targeted payloads. LangGraph orchestration arrives in Phase 4.
 
 Trap ground truth for maintainers lives in [`docs/VULNERABILITIES.md`](docs/VULNERABILITIES.md) — not in source comments.
 
@@ -56,6 +56,56 @@ Run Judge tests:
 pytest tests/test_judge_criteria.py tests/test_source_overlay.py -v
 JUDGE_SANDBOX=local pytest tests/test_judge_integration.py -v -m integration
 JUDGE_SANDBOX=docker pytest tests/test_judge_integration.py -v -m integration
+```
+
+## Phase 3 — White-Box Agents
+
+LLM agents use LangChain + Groq structured output to analyze source and generate attacks (1–3 per run, no padding).
+
+Install:
+
+```bash
+pip install -e ".[dev,judge,agents]"
+cp .env.example .env   # set GROQ_API_KEY
+```
+
+Environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `GROQ_API_KEY` | Groq API authentication (required for agents) |
+| `CHAOS_QA_MODEL` | Default `openai/gpt-oss-120b` |
+| `CHAOS_ATTACK_MAX` | Max attacks per run (default `3`) |
+| `JUDGE_SANDBOX` | `local` or `docker` for probe script |
+
+Usage:
+
+```python
+from agents.chaos_agent import generate_attacks, probe_attacks
+from agents.developer_agent import generate_patch
+
+strategy = generate_attacks()
+results = probe_attacks(strategy)
+```
+
+Run the manual probe (Chaos → Judge, optional patch re-eval):
+
+```bash
+export GROQ_API_KEY=...
+JUDGE_SANDBOX=local python scripts/run_chaos_probe.py
+JUDGE_SANDBOX=local python scripts/run_chaos_probe.py --patch
+```
+
+Agent unit tests (no API key):
+
+```bash
+pytest tests/test_agents_models.py tests/test_agents_converters.py tests/test_source_bundle.py tests/test_developer_validation.py tests/test_chaos_agent.py tests/test_developer_agent.py -v
+```
+
+Optional live Groq test:
+
+```bash
+pytest tests/test_agents_live.py -v -m llm
 ```
 
 ## Phase 1 — Target App
