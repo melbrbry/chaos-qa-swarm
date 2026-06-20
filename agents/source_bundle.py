@@ -24,7 +24,12 @@ def load_source_files(source_root: Path | None = None) -> dict[str, str]:
 def build_source_context(source_root: Path | None = None) -> str:
   """Format source files with path headers for LLM consumption."""
   files = load_source_files(source_root)
+  return build_source_context_from_files(files)
+
+
+def build_source_context_from_files(source_files: dict[str, str]) -> str:
+  """Format an overlay or explicit file map for LLM consumption."""
   sections = []
-  for rel_path, content in files.items():
+  for rel_path, content in sorted(source_files.items()):
     sections.append(f"## {rel_path}\n\n```python\n{content}\n```")
   return "\n\n".join(sections)

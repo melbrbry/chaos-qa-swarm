@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, WithJsonSchema, field_validator
 
 from agents.config import get_attack_max
+from judge.models import EvaluationResult
 
 
 def _parse_json_object(value: Any) -> dict[str, Any]:
@@ -89,3 +90,17 @@ class DeveloperPatch(BaseModel):
   def parse_patched_files(cls, value: Any) -> dict[str, str]:
     parsed = _parse_json_object(value)
     return {str(key): str(content) for key, content in parsed.items()}
+
+
+class PatchRejectionContext(BaseModel):
+  """Feedback when a candidate patch fails judge_verify."""
+
+  patch_attempt: int
+  max_patch_attempts: int
+  rejected_patch: DeveloperPatch
+  candidate_files: list[str]
+  failure_kind: Literal["attack", "baseline", "startup"]
+  failing_result: EvaluationResult
+  expected_checks: dict[str, Any] | None = None
+  actual_response: dict[str, Any] | None = None
+  other_failures: list[str] = Field(default_factory=list)

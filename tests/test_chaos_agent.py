@@ -43,6 +43,15 @@ def test_generate_attacks_with_mock_llm() -> None:
   assert result.attacks[0].payload.path == "/api/loyalty/score"
 
 
+def test_generate_attacks_uses_source_files_overlay() -> None:
+  strategy = _sample_strategy()
+  llm = FakeStructuredLLM(strategy)
+  with patch("agents.chaos_agent.invoke_structured", return_value=strategy) as mocked:
+    generate_attacks(source_files={"target_app/routes/loyalty.py": "# marker"}, llm=llm)
+  human_prompt = mocked.call_args.kwargs["human_prompt"]
+  assert "# marker" in human_prompt
+
+
 def test_probe_attacks_calls_judge() -> None:
   strategy = _sample_strategy()
   mock_result = EvaluationResult(

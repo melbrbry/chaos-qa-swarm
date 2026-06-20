@@ -139,7 +139,7 @@ JUDGE_SANDBOX=local python scripts/run_chaos_probe.py
 JUDGE_SANDBOX=local python scripts/run_chaos_probe.py --patch
 ```
 
-With `--patch`, the script patches the **first** `vulnerable` / `logic_error` result and re-runs **only that attack payload** against the patched overlay. It does **not** run `tests/test_baseline_happy_path.py` or re-probe all attacks. Baseline regression gating is planned for Phase 4 (LangGraph loop).
+With `--patch`, the script patches the **first** `vulnerable` / `logic_error` result and re-runs **only that attack payload** against the patched overlay. Use `scripts/run_swarm.py` for the full LangGraph loop with baseline regression gating.
 
 ### Tests
 
@@ -157,7 +157,135 @@ Optional live Groq test:
 pytest tests/test_agents_live.py -v -m llm
 ```
 
-LangGraph orchestration (Chaos ↔ Judge ↔ Developer loop) arrives in **Phase 4**.
+## Phase 4 — LangGraph Swarm Loop
+
+Autonomous **exploration + remediation** wired in [`graph/`](graph/) with LangGraph. Phase 3 agents and the Judge are unchanged; the graph orchestrates when they run and what state passes between nodes.
+
+### Full architecture
+
+```mermaid
+flowchart TB
+  subgraph outer [Outer loop — exploration]
+    chaos[chaos: generate_attacks]
+    judge_probe[judge_probe: evaluate attacks only]
+    chaos --> judge_probe
+  end
+
+  subgraph inner [Inner loop — remediation]
+    developer[developer: generate_patch]
+    judge_verify[judge_verify: baselines + all attacks]
+    developer --> judge_verify
+    judge_verify -->|patch rejected| developer
+  end
+
+  judge_probe -->|no failures| success([success])
+  judge_probe -->|active_failure| developer
+  judge_verify -->|all robust, under cap| chaos
+  judge_verify -->|all robust, cap hit| capped([capped])
+  judge_verify -->|patch cap exhausted| stuck([stuck])
+
+  success --> endNode([END])
+  capped --> endNode
+  stuck --> endNode
+```
+
+```mermaid
+stateDiagram-v2
+  [*] --> chaos
+  chaos --> judge_probe: new strategy
+  judge_probe --> success: no failures
+  judge_probe --> developer: active_failure
+  developer --> judge_verify: candidate patch
+  judge_verify --> developer: still failing under patch cap
+  judge_verify --> stuck: patch_iteration >= max
+  judge_verify --> chaos: verify passed re_explore
+  judge_verify --> capped: verify passed exploration cap hit
+  success --> [*]
+  stuck --> [*]
+  capped --> [*]
+```
+
+| Component | Package | Role |
+| --- | --- | --- |
+| **Chaos** | `agents/chaos_agent.py` | `generate_attacks(source_files=…)` — reads merged patched source on re-explore |
+| **Developer** | `agents/developer_agent.py` | `generate_patch(…, rejection_context=…)` — one failure per call; retry feedback after verify |
+| **Judge probe** | `graph/nodes.py` | Runs **attack requests only** against accepted `source_files` |
+| **Judge verify** | `graph/nodes.py` | Runs **baseline requests + all attack requests** against **candidate** overlay |
+| **Baseline gate** | `judge/baseline.py` | 10 happy-path `PayloadRequest`s with `response_checks` |
+| **Graph** | `graph/graph.py` | `build_graph()` — dual-loop routing |
+
+### Dual loops
+
+| Loop | Nodes | Purpose |
+| --- | --- | --- |
+| **Outer (exploration)** | `chaos` → `judge_probe` | Re-read patched source; discover new attack vectors |
+| **Inner (remediation)** | `developer` → `judge_verify` | Fix one `active_failure` per developer call; prove patch via full verify |
+
+Re-Chaos runs after **verify accepts** a patch (all baselines + attacks robust), unless `CHAOS_MAX_EXPLORATION_ROUNDS` is reached.
+
+### How failures are handled
+
+**Probe** (`judge_probe`) — entry into remediation:
+
+- Evaluates only the current chaos `attack_requests`.
+- Sets **one** `active_failure`: the first `vulnerable` / `logic_error` result.
+- Routes to `developer` or ends with `success` if none fail.
+
+**Verify** (`judge_verify`) — gate before accepting a patch:
+
+- Evaluates `baseline_requests() + attack_requests` in one Judge session.
+- A patch is **promoted** to `source_files` only when **every** row is robust.
+- If anything fails, **one primary failure** drives the next developer call (priority: baseline regression → attack → startup). Other failures are listed in `PatchRejectionContext.other_failures`.
+- A **second** attack that failed on probe but was not `active_failure` can surface here in the **same inner loop** after the first patch — verify re-runs all attacks without waiting for re-Chaos.
+
+**Developer** — one target per invocation:
+
+- Input: `active_failure` (`failed_request` + stack trace) and optional `PatchRejectionContext` on retries.
+- Output: candidate overlay merged into `candidate_source_files` (not promoted until verify passes).
+
+### Terminal status
+
+| Status | When |
+| --- | --- |
+| `success` | `judge_probe` finds no exploitable attacks (Chaos attacks all robust on current source) |
+| `stuck` | Inner loop hits `CHAOS_MAX_PATCH_ITERATIONS` without verify passing |
+| `capped` | Verify passed but `CHAOS_MAX_EXPLORATION_ROUNDS` reached (no further re-Chaos) |
+
+Success means Chaos can no longer produce exploitable attacks on the accepted overlay — not merely that one patch worked.
+
+### Environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CHAOS_MAX_PATCH_ITERATIONS` | `3` | Inner remediation attempts per exploration round |
+| `CHAOS_MAX_EXPLORATION_ROUNDS` | `3` | Re-Chaos cycles after successful verifies |
+
+(Plus Phase 3 vars: `GROQ_API_KEY`, `CHAOS_QA_MODEL`, `CHAOS_REASONING_EFFORT`, `CHAOS_ATTACK_MAX`, `JUDGE_SANDBOX`.)
+
+### Run the swarm
+
+```bash
+export GROQ_API_KEY=...
+JUDGE_SANDBOX=local python scripts/run_swarm.py
+```
+
+Programmatic:
+
+```python
+from graph import build_graph, initial_state
+
+final_state = build_graph().invoke(initial_state())
+print(final_state["status"], final_state["message"])
+```
+
+Phase 3 linear demo (no graph, no baseline gate): `python scripts/run_chaos_probe.py`
+
+### Tests
+
+```bash
+pytest tests/test_graph_routing.py tests/test_graph_nodes.py tests/test_baseline_requests.py -v
+JUDGE_SANDBOX=local pytest tests/test_graph_integration.py -v -m integration
+```
 
 ## API reference
 
