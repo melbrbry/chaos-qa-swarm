@@ -2,12 +2,17 @@
 
 **White-Box Semantic Fuzzing** pipeline: a source-readable FastAPI target app, happy-path regression tests, a deterministic Judge sandbox, and LLM agents for attack generation and patching.
 
-## White-Box vs Black-Box
+## Why LLM-driven white-box QA?
 
-| Approach | Input | How it finds bugs |
+| Dimension | Brute-force / schema fuzzer | Chaos QA Swarm |
 | --- | --- | --- |
-| **Black-box fuzzing** | JSON Schema / OpenAPI | Mutates fields randomly against type constraints |
-| **White-box (this project)** | `target_app/` source code | Reads logic branches, hypothesizes compound payloads that execute vulnerable paths |
+| **Input** | OpenAPI / JSON Schema types | `target_app/` source code branches |
+| **Payload strategy** | Random/mutation within types | Hypothesis-first compound conditions |
+| **Trap discovery** | Low for logic-only bugs | Targets unhandled branches (div-by-zero, KeyError, logic gaps) |
+| **Remediation** | Manual | Developer agent + baseline regression gate |
+| **Observability** | Request logs | Langfuse trace per loop (node timing + token cost) |
+
+**Example:** the loyalty endpoint trap requires `months_active=0` **and** `account_type=legacy` together. A schema fuzzer may hit `0` or `"legacy"` independently; white-box Chaos reads the branch and proposes the compound payload deliberately.
 
 Trap ground truth for maintainers lives in [`docs/VULNERABILITIES.md`](docs/VULNERABILITIES.md) — not in source comments or agent prompts.
 
@@ -17,8 +22,8 @@ Trap ground truth for maintainers lives in [`docs/VULNERABILITIES.md`](docs/VULN
 cd ~/Desktop/chaos-qa-swarm
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev,judge,agents]"
-cp .env.example .env   # set GROQ_API_KEY for agents
+pip install -e ".[dev,full]"
+cp .env.example .env   # set GROQ_API_KEY for agents; optional LANGFUSE_* for tracing
 ```
 
 Run the app locally:
@@ -285,6 +290,94 @@ Phase 3 linear demo (no graph, no baseline gate): `python scripts/run_chaos_prob
 ```bash
 pytest tests/test_graph_routing.py tests/test_graph_nodes.py tests/test_baseline_requests.py -v
 JUDGE_SANDBOX=local pytest tests/test_graph_integration.py -v -m integration
+```
+
+## Phase 5 — Observability (Langfuse)
+
+Optional **Langfuse Cloud** tracing for portfolio demos: nested spans per graph node, Groq token usage on Chaos/Developer LLM calls, and run metadata (exploration round, patch iteration, terminal status). Tracing is **off** when `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` are unset — the swarm runs unchanged.
+
+### Setup
+
+1. Create a project at [Langfuse Cloud](https://cloud.langfuse.com) and copy API keys.
+2. Add to `.env`:
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+# LANGFUSE_HOST=https://cloud.langfuse.com   # default
+# LANGFUSE_ENABLED=0                         # force disable
+```
+
+3. Install observability extras (included in `[full]`):
+
+```bash
+pip install -e ".[full]"
+```
+
+### Run with tracing
+
+```bash
+export GROQ_API_KEY=...
+export LANGFUSE_PUBLIC_KEY=...
+export LANGFUSE_SECRET_KEY=...
+JUDGE_SANDBOX=local python scripts/run_swarm.py
+```
+
+The CLI prints a Langfuse URL hint and flushes events before exit. In the UI, filter by tag **`chaos-qa-swarm`**.
+
+### What you see in Langfuse
+
+| Span | Contents |
+| --- | --- |
+| **`chaos-qa-swarm-run`** (root) | Session id, final status, exploration/patch counts, `JUDGE_SANDBOX` |
+| **`chaos`** | Attack count, truncated analysis notes, nested Groq generation (tokens/latency) |
+| **`judge_probe`** | Request/failure counts, active failure path |
+| **`developer`** | Patch iteration, failure kind, rejection context flag + Groq generation |
+| **`judge_verify`** | Baseline + attack counts, pass/fail, accepted flag |
+
+Span metadata intentionally avoids full source or patch bodies — only paths, counts, and verdicts.
+
+### Architecture
+
+```mermaid
+flowchart TB
+  subgraph entry [run_swarm entry]
+    observeRoot["@observe chaos-qa-swarm-run"]
+    handler[CallbackHandler on graph invoke]
+  end
+
+  subgraph graph [LangGraph nodes]
+    chaosNode["@observe chaos"]
+    probeNode["@observe judge_probe"]
+    devNode["@observe developer"]
+    verifyNode["@observe judge_verify"]
+  end
+
+  subgraph llm [LLM calls]
+    groq["ChatGroq via invoke_structured"]
+  end
+
+  observeRoot --> handler
+  handler --> graph
+  chaosNode --> groq
+  devNode --> groq
+  groq --> langfuseUI[Langfuse Cloud UI]
+  graph --> langfuseUI
+```
+
+Implementation: [`observability/langfuse_tracing.py`](observability/langfuse_tracing.py), `@observe` on [`graph/nodes.py`](graph/nodes.py), `CallbackHandler` attached at graph compile / invoke in [`graph/graph.py`](graph/graph.py) and [`scripts/run_swarm.py`](scripts/run_swarm.py).
+
+### Tests
+
+```bash
+pytest tests/test_langfuse_tracing.py -v
+pytest tests/ -m "not integration and not llm and not langfuse"
+```
+
+Optional live trace (requires keys):
+
+```bash
+pytest tests/ -m langfuse
 ```
 
 ## API reference

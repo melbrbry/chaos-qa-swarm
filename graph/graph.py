@@ -12,9 +12,10 @@ from graph.nodes import (
 )
 from graph.routing import route_after_probe, route_after_verify
 from graph.state import SwarmState, initial_state
+from observability.langfuse_tracing import get_langfuse_handler, is_tracing_enabled
 
 
-def build_graph():
+def build_graph(enable_tracing: bool | None = None):
   """Compile the exploration + remediation swarm graph."""
   graph = StateGraph(SwarmState)
   graph.add_node("chaos", analyze_and_generate_attacks)
@@ -35,12 +36,19 @@ def build_graph():
     route_after_verify,
     {"developer": "developer", "chaos": "chaos", "end": END},
   )
-  return graph.compile()
+  compiled = graph.compile()
+
+  tracing = enable_tracing if enable_tracing is not None else is_tracing_enabled()
+  if tracing:
+    handler = get_langfuse_handler()
+    if handler is not None:
+      return compiled.with_config({"callbacks": [handler]})
+  return compiled
 
 
 def run_swarm(*, llm=None) -> SwarmState:
   """Run the swarm graph and return final state."""
-  app = build_graph()
+  app = build_graph(enable_tracing=False)
   if llm is not None:
     raise NotImplementedError("Custom llm injection is handled in tests via agent mocks")
   final_state = app.invoke(initial_state())

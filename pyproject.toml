@@ -24,7 +24,10 @@ agents = [
     "langchain-groq>=0.2.0",
     "langgraph>=0.2.0",
 ]
-full = ["chaos-qa-swarm[judge,agents]"]
+observability = [
+    "langfuse>=3.0.0",
+]
+full = ["chaos-qa-swarm[judge,agents,observability]"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -32,6 +35,7 @@ pythonpath = ["."]
 markers = [
     "integration: requires Docker daemon or local sandbox execution",
     "llm: requires Groq API key",
+    "langfuse: requires Langfuse API keys",
 ]
 
 [build-system]
@@ -39,4 +43,4 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["target_app*", "judge*", "agents*", "graph*"]
+include = ["target_app*", "judge*", "agents*", "graph*", "observability*"]

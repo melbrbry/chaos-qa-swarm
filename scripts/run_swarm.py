@@ -4,10 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from graph.graph import build_graph
 from graph.state import RunStatus, initial_state
+from observability.langfuse_tracing import (
+  flush_tracing,
+  get_trace_url_hint,
+  graph_invoke_config,
+  is_tracing_enabled,
+  new_session_id,
+  observe,
+  update_observation_metadata,
+)
 
 
 def _print_results(label: str, results) -> None:
@@ -23,13 +33,22 @@ def _print_results(label: str, results) -> None:
     )
 
 
+@observe(name="chaos-qa-swarm-run")
 def main() -> int:
   parser = argparse.ArgumentParser(description="Run chaos QA swarm LangGraph loop")
-  args = parser.parse_args()
+  parser.parse_args()
 
-  app = build_graph()
+  tracing = is_tracing_enabled()
+  session_id = new_session_id()
+  app = build_graph(enable_tracing=tracing)
   state = initial_state()
-  final_state = app.invoke(state)
+  invoke_config = graph_invoke_config(
+    session_id=session_id,
+    tags=["chaos-qa-swarm", "phase-5"],
+    metadata={"JUDGE_SANDBOX": os.environ.get("JUDGE_SANDBOX", "docker")},
+    callbacks=not tracing,
+  )
+  final_state = app.invoke(state, config=invoke_config)
 
   strategy = final_state.get("strategy")
   if strategy is not None:
@@ -49,6 +68,21 @@ def main() -> int:
   print(f"Message: {final_state.get('message', '')}")
   print(f"Exploration rounds: {final_state.get('exploration_round', 0)}")
   print(f"Patch iterations (last inner loop): {final_state.get('patch_iteration', 0)}")
+
+  update_observation_metadata(
+    {
+      "final_status": status.value,
+      "exploration_round": final_state.get("exploration_round", 0),
+      "patch_iteration": final_state.get("patch_iteration", 0),
+      "JUDGE_SANDBOX": os.environ.get("JUDGE_SANDBOX", "docker"),
+    }
+  )
+
+  trace_hint = get_trace_url_hint()
+  if trace_hint:
+    print(f"\nLangfuse trace: {trace_hint} (filter tag: chaos-qa-swarm, session: {session_id})")
+
+  flush_tracing()
 
   if status == RunStatus.SUCCESS:
     return 0

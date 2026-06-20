@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from agents.endpoints import load_endpoint_catalog
 from agents.llm import build_chat_model, invoke_structured
@@ -73,6 +74,7 @@ def generate_patch(
   stack_trace: str,
   rejection_context: PatchRejectionContext | None = None,
   llm=None,
+  config: Any = None,
 ) -> DeveloperPatch:
   """Generate a minimal patch for the crash described by payload and stack trace."""
   baseline_context = build_source_context()
@@ -100,6 +102,7 @@ def generate_patch(
     DeveloperPatch,
     system_prompt=DEVELOPER_SYSTEM_PROMPT,
     human_prompt=human_prompt,
+    config=config,
   )
   patch.patched_files = validate_patch_files(patch.patched_files)
   return patch

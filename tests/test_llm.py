@@ -35,3 +35,33 @@ def test_invoke_structured_uses_groq_strict_json_schema() -> None:
     strict=True,
   )
   assert result == strategy
+
+
+def test_invoke_structured_passes_config_to_invoke() -> None:
+  strategy = ChaosStrategy(
+    analysis_notes="notes",
+    attacks=[
+      AttackVector(
+        vulnerable_line_number=1,
+        hypothesis="test",
+        payload=AttackPayload(path="/api/a", body={"x": 1}),
+      )
+    ],
+  )
+  structured_runnable = MagicMock()
+  structured_runnable.invoke.return_value = strategy
+  llm = MagicMock()
+  llm.with_structured_output.return_value = structured_runnable
+  invoke_config = {"callbacks": ["handler"]}
+
+  invoke_structured(
+    llm,
+    ChaosStrategy,
+    system_prompt="system",
+    human_prompt="human",
+    config=invoke_config,
+  )
+
+  structured_runnable.invoke.assert_called_once()
+  _, kwargs = structured_runnable.invoke.call_args
+  assert kwargs["config"] == invoke_config

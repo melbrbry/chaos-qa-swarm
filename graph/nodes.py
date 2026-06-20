@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
+from langchain_core.runnables import RunnableConfig
+
 from agents.chaos_agent import generate_attacks
 from agents.converters import strategy_to_requests
 from agents.developer_agent import generate_patch as agent_generate_patch
@@ -19,6 +23,15 @@ from graph.verify_helpers import (
 from judge.baseline import baseline_requests
 from judge.executor import evaluate_payloads
 from judge.models import EvaluationResult
+from observability.langfuse_tracing import observe, update_observation_metadata
+
+
+def _truncate(text: str | None, limit: int = 200) -> str:
+  if not text:
+    return ""
+  if len(text) <= limit:
+    return text
+  return text[:limit] + "..."
 
 
 def _first_failure(results: list) -> object | None:
@@ -28,8 +41,21 @@ def _first_failure(results: list) -> object | None:
   return None
 
 
-def analyze_and_generate_attacks(state: SwarmState) -> SwarmState:
-  strategy = generate_attacks(source_files=state.get("source_files") or None)
+@observe(name="chaos")
+def analyze_and_generate_attacks(
+  state: SwarmState, config: Optional[RunnableConfig] = None
+) -> SwarmState:
+  strategy = generate_attacks(
+    source_files=state.get("source_files") or None,
+    config=config,
+  )
+  update_observation_metadata(
+    {
+      "exploration_round": state.get("exploration_round", 0),
+      "attack_count": len(strategy.attacks),
+      "analysis_notes": _truncate(strategy.analysis_notes),
+    }
+  )
   return SwarmState(
     strategy=strategy,
     attack_requests=strategy_to_requests(strategy),
@@ -40,11 +66,24 @@ def analyze_and_generate_attacks(state: SwarmState) -> SwarmState:
   )
 
 
-def run_judge_probe(state: SwarmState) -> SwarmState:
+@observe(name="judge_probe")
+def run_judge_probe(state: SwarmState, config: Optional[RunnableConfig] = None) -> SwarmState:
+  del config
   source_files = state.get("source_files") or {}
   attack_requests = state.get("attack_requests") or []
   probe_results = evaluate_payloads(source_files, attack_requests)
   active_failure = _first_failure(probe_results)
+  failures_count = sum(1 for result in probe_results if is_failure(result))
+  active_path = None
+  if active_failure is not None:
+    active_path = active_failure.request.path
+  update_observation_metadata(
+    {
+      "requests_count": len(probe_results),
+      "failures_count": failures_count,
+      "active_failure_path": active_path,
+    }
+  )
   updates: SwarmState = SwarmState(
     probe_results=probe_results,
     active_failure=active_failure,
@@ -59,20 +98,31 @@ def run_judge_probe(state: SwarmState) -> SwarmState:
   return updates
 
 
-def generate_patch_node(state: SwarmState) -> SwarmState:
+@observe(name="developer")
+def generate_patch_node(state: SwarmState, config: Optional[RunnableConfig] = None) -> SwarmState:
   patch_iteration = state.get("patch_iteration", 0) + 1
   active_failure = state.get("active_failure")
   if active_failure is None:
     raise RuntimeError("generate_patch_node called without active_failure")
 
+  rejection_context = state.get("rejection_context")
   stack_trace = active_failure.stack_trace or active_failure.response_body or ""
   patch = agent_generate_patch(
     source_files=state.get("source_files") or {},
     failed_request=active_failure.request,
     stack_trace=stack_trace,
-    rejection_context=state.get("rejection_context"),
+    rejection_context=rejection_context,
+    config=config,
   )
   candidate_source_files = merge_source_files(state.get("source_files"), patch)
+  failure_kind = rejection_context.failure_kind if rejection_context else "probe"
+  update_observation_metadata(
+    {
+      "patch_iteration": patch_iteration,
+      "failure_kind": failure_kind,
+      "has_rejection_context": rejection_context is not None,
+    }
+  )
   return SwarmState(
     patch_iteration=patch_iteration,
     last_patch=patch,
@@ -81,10 +131,14 @@ def generate_patch_node(state: SwarmState) -> SwarmState:
   )
 
 
-def run_judge_verify(state: SwarmState) -> SwarmState:
+@observe(name="judge_verify")
+def run_judge_verify(state: SwarmState, config: Optional[RunnableConfig] = None) -> SwarmState:
+  del config
   candidate_source_files = state.get("candidate_source_files") or {}
   attack_requests = state.get("attack_requests") or []
   requests = baseline_requests() + attack_requests
+  baseline_count = len(baseline_requests())
+  attack_count = len(attack_requests)
 
   try:
     verify_results = evaluate_payloads(candidate_source_files, requests)
@@ -101,6 +155,14 @@ def run_judge_verify(state: SwarmState) -> SwarmState:
       failure_kind="startup",
       other_failures=[],
     )
+    update_observation_metadata(
+      {
+        "baseline_count": baseline_count,
+        "attack_count": attack_count,
+        "failures_count": 1,
+        "accepted": False,
+      }
+    )
     return SwarmState(
       verify_results=[],
       active_failure=failing_result,
@@ -113,6 +175,14 @@ def run_judge_verify(state: SwarmState) -> SwarmState:
   failures = [result for result in verify_results if is_failure(result)]
   if not failures:
     exploration_round = state.get("exploration_round", 0) + 1
+    update_observation_metadata(
+      {
+        "baseline_count": baseline_count,
+        "attack_count": attack_count,
+        "failures_count": 0,
+        "accepted": True,
+      }
+    )
     updates: SwarmState = SwarmState(
       verify_results=verify_results,
       source_files=candidate_source_files,
@@ -148,6 +218,14 @@ def run_judge_verify(state: SwarmState) -> SwarmState:
     failing_result=primary,
     failure_kind=failure_kind,  # type: ignore[arg-type]
     other_failures=other_failures,
+  )
+  update_observation_metadata(
+    {
+      "baseline_count": baseline_count,
+      "attack_count": attack_count,
+      "failures_count": len(failures),
+      "accepted": False,
+    }
   )
   updates = SwarmState(
     verify_results=verify_results,

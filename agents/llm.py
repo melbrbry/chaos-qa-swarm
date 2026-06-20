@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -32,6 +32,7 @@ def invoke_structured(
   *,
   system_prompt: str,
   human_prompt: str,
+  config: Any = None,
 ) -> T:
   """Invoke LLM with Groq strict JSON schema structured output."""
   structured_llm = llm.with_structured_output(
@@ -39,11 +40,15 @@ def invoke_structured(
     method="json_schema",
     strict=True,
   )
+  invoke_kwargs: dict[str, Any] = {}
+  if config is not None:
+    invoke_kwargs["config"] = config
   result = structured_llm.invoke(
     [
       SystemMessage(content=system_prompt),
       HumanMessage(content=human_prompt),
-    ]
+    ],
+    **invoke_kwargs,
   )
   if isinstance(result, schema):
     return result

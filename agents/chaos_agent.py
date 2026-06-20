@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from agents.config import get_attack_max
 from agents.converters import strategy_to_requests
@@ -24,6 +25,7 @@ def generate_attacks(
   *,
   source_files: dict[str, str] | None = None,
   llm=None,
+  config: Any = None,
 ) -> ChaosStrategy:
   """Analyze source code and return 1 to N high-confidence attacks."""
   if source_files:
@@ -41,6 +43,7 @@ def generate_attacks(
     ChaosStrategy,
     system_prompt=system_prompt,
     human_prompt=human_prompt,
+    config=config,
   )
 
 
