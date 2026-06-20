@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from agents.env_loader import load_project_env
 from agents.chaos_agent import generate_attacks, probe_attacks
 from agents.developer_agent import generate_patch, merge_source_files
 from judge.executor import evaluate_payload
@@ -20,6 +21,8 @@ def main() -> int:
     help="Generate a developer patch for the first vulnerable result and re-evaluate",
   )
   args = parser.parse_args()
+
+  load_project_env()
 
   print("Generating attacks from source...")
   strategy = generate_attacks()

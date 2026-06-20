@@ -26,6 +26,11 @@ from judge.models import EvaluationResult
 from observability.langfuse_tracing import observe, update_observation_metadata
 
 
+def _overlay_base(state: SwarmState) -> dict[str, str]:
+  """Merge accepted source with in-progress candidate overlay for the next patch."""
+  return dict(state.get("candidate_source_files") or state.get("source_files") or {})
+
+
 def _truncate(text: str | None, limit: int = 200) -> str:
   if not text:
     return ""
@@ -107,14 +112,15 @@ def generate_patch_node(state: SwarmState, config: Optional[RunnableConfig] = No
 
   rejection_context = state.get("rejection_context")
   stack_trace = active_failure.stack_trace or active_failure.response_body or ""
+  overlay_base = _overlay_base(state)
   patch = agent_generate_patch(
-    source_files=state.get("source_files") or {},
+    source_files=overlay_base,
     failed_request=active_failure.request,
     stack_trace=stack_trace,
     rejection_context=rejection_context,
     config=config,
   )
-  candidate_source_files = merge_source_files(state.get("source_files"), patch)
+  candidate_source_files = merge_source_files(overlay_base, patch)
   failure_kind = rejection_context.failure_kind if rejection_context else "probe"
   update_observation_metadata(
     {
@@ -142,7 +148,7 @@ def run_judge_verify(state: SwarmState, config: Optional[RunnableConfig] = None)
 
   try:
     verify_results = evaluate_payloads(candidate_source_files, requests)
-  except RuntimeError as exc:
+  except Exception as exc:
     failing_result = make_startup_failure(str(exc))
     last_patch = state.get("last_patch")
     if last_patch is None:
@@ -225,6 +231,8 @@ def run_judge_verify(state: SwarmState, config: Optional[RunnableConfig] = None)
       "attack_count": attack_count,
       "failures_count": len(failures),
       "accepted": False,
+      "primary_failure_path": primary.request.path,
+      "failure_kind": failure_kind,
     }
   )
   updates = SwarmState(

@@ -6,9 +6,21 @@ import os
 import uuid
 from typing import Any
 
+import httpx
+
 DEFAULT_LANGFUSE_HOST = "https://cloud.langfuse.com"
 
 _handler = None
+_last_auth_error: str | None = None
+
+
+def langfuse_base_url() -> str:
+  """Return configured Langfuse API base URL."""
+  return (
+    os.environ.get("LANGFUSE_BASE_URL")
+    or os.environ.get("LANGFUSE_HOST")
+    or DEFAULT_LANGFUSE_HOST
+  ).rstrip("/")
 
 
 def is_tracing_enabled() -> bool:
@@ -18,8 +30,66 @@ def is_tracing_enabled() -> bool:
   return bool(os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY"))
 
 
+def validate_langfuse_credentials() -> bool:
+  """Return True when Langfuse API credentials authenticate successfully."""
+  global _last_auth_error
+  _last_auth_error = None
+  if not is_tracing_enabled():
+    return False
+  _ensure_langfuse_env()
+  public_key = os.environ.get("LANGFUSE_PUBLIC_KEY", "").strip()
+  secret_key = os.environ.get("LANGFUSE_SECRET_KEY", "").strip()
+  base_url = langfuse_base_url()
+  try:
+    response = httpx.get(
+      f"{base_url}/api/public/projects",
+      auth=(public_key, secret_key),
+      timeout=10.0,
+    )
+  except httpx.HTTPError as exc:
+    _last_auth_error = f"Could not reach Langfuse at {base_url}: {exc}"
+    return False
+
+  if response.status_code == 200:
+    return True
+
+  detail = response.text.strip()
+  if len(detail) > 200:
+    detail = detail[:200] + "..."
+  _last_auth_error = (
+    f"Langfuse API rejected credentials (HTTP {response.status_code}) at {base_url}. "
+    f"{detail or 'Create new project API keys in the Langfuse UI.'}"
+  )
+  return False
+
+
+def get_last_auth_error() -> str | None:
+  """Return the most recent Langfuse credential validation error."""
+  return _last_auth_error
+
+
+def ensure_tracing_ready(*, quiet: bool = False) -> bool:
+  """Disable tracing when credentials are missing or invalid. Returns tracing active state."""
+  if not is_tracing_enabled():
+    return False
+  if validate_langfuse_credentials():
+    return True
+  os.environ["LANGFUSE_ENABLED"] = "0"
+  global _handler
+  _handler = None
+  if not quiet:
+    detail = get_last_auth_error() or (
+      "Verify LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, and LANGFUSE_HOST "
+      f"({langfuse_base_url()})."
+    )
+    print(f"Langfuse tracing disabled: {detail}")
+  return False
+
+
 def _ensure_langfuse_env() -> None:
-  os.environ.setdefault("LANGFUSE_HOST", DEFAULT_LANGFUSE_HOST)
+  base_url = langfuse_base_url()
+  os.environ.setdefault("LANGFUSE_HOST", base_url)
+  os.environ.setdefault("LANGFUSE_BASE_URL", base_url)
 
 
 def get_langfuse_handler():
@@ -72,7 +142,7 @@ def get_trace_url_hint() -> str | None:
   """Return a human-readable Langfuse UI hint when tracing is active."""
   if not is_tracing_enabled():
     return None
-  host = os.environ.get("LANGFUSE_HOST", DEFAULT_LANGFUSE_HOST).rstrip("/")
+  host = langfuse_base_url()
   return f"{host}/trace"
 
 

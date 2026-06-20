@@ -99,7 +99,7 @@ def generate_patch(
   model = llm or build_chat_model()
   prompt = human_prompt
   last_error: Exception | None = None
-  for attempt in range(2):
+  for attempt in range(3):
     try:
       output = invoke_structured(
         model,

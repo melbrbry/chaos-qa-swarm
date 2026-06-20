@@ -3,6 +3,14 @@
 
 from __future__ import annotations
 
+from agents.env_loader import load_project_env
+
+load_project_env()
+
+from observability.langfuse_tracing import ensure_tracing_ready
+
+tracing_enabled = ensure_tracing_ready()
+
 import argparse
 import os
 import sys
@@ -13,7 +21,6 @@ from observability.langfuse_tracing import (
   flush_tracing,
   get_trace_url_hint,
   graph_invoke_config,
-  is_tracing_enabled,
   new_session_id,
   observe,
   update_observation_metadata,
@@ -38,15 +45,14 @@ def main() -> int:
   parser = argparse.ArgumentParser(description="Run chaos QA swarm LangGraph loop")
   parser.parse_args()
 
-  tracing = is_tracing_enabled()
   session_id = new_session_id()
-  app = build_graph(enable_tracing=tracing)
+  app = build_graph(enable_tracing=tracing_enabled)
   state = initial_state()
   invoke_config = graph_invoke_config(
     session_id=session_id,
     tags=["chaos-qa-swarm", "phase-5"],
     metadata={"JUDGE_SANDBOX": os.environ.get("JUDGE_SANDBOX", "docker")},
-    callbacks=not tracing,
+    callbacks=not tracing_enabled,
   )
   final_state = app.invoke(state, config=invoke_config)
 

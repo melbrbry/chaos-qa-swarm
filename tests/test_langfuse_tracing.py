@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import os
 import pytest
 
 from observability import langfuse_tracing
@@ -80,3 +81,40 @@ def test_build_graph_without_tracing(monkeypatch) -> None:
 
   app = build_graph(enable_tracing=False)
   assert app is not None
+
+
+def test_validate_langfuse_credentials_uses_projects_endpoint(monkeypatch) -> None:
+  monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+  monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+  monkeypatch.setenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+  response = MagicMock(status_code=200, text='{"data":[]}')
+  with patch("observability.langfuse_tracing.httpx.get", return_value=response):
+    assert langfuse_tracing.validate_langfuse_credentials() is True
+
+
+def test_validate_langfuse_credentials_surfaces_api_error(monkeypatch) -> None:
+  monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+  monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+  response = MagicMock(
+    status_code=401,
+    text='{"message":"Invalid credentials. Confirm that you\'ve configured the correct host."}',
+  )
+  with patch("observability.langfuse_tracing.httpx.get", return_value=response):
+    assert langfuse_tracing.validate_langfuse_credentials() is False
+  assert "HTTP 401" in (langfuse_tracing.get_last_auth_error() or "")
+
+
+def test_ensure_tracing_ready_disables_invalid_credentials(monkeypatch) -> None:
+  monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-invalid")
+  monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-invalid")
+  monkeypatch.setenv("LANGFUSE_ENABLED", "1")
+  with patch(
+    "observability.langfuse_tracing.validate_langfuse_credentials",
+    return_value=False,
+  ):
+    with patch(
+      "observability.langfuse_tracing.get_last_auth_error",
+      return_value="Langfuse API rejected credentials (HTTP 401)",
+    ):
+      assert langfuse_tracing.ensure_tracing_ready(quiet=True) is False
+  assert os.environ.get("LANGFUSE_ENABLED") == "0"
