@@ -1,53 +1,63 @@
 # Chaos QA Swarm
 
-**White-Box Semantic Fuzzing** pipeline: a source-readable FastAPI target app, happy-path regression tests, a deterministic Judge sandbox, and LLM agents for attack generation and patching.
+**Autonomous white-box QA for logic bugs** — LLM agents read your FastAPI source, craft compound attack payloads, patch failures, and prove fixes through a deterministic regression gate.
 
-## Why LLM-driven white-box QA?
+Most fuzzers mutate types within a schema. This project targets **branch logic**: conditions like `account_type == "legacy"` **and** `months_active == 0` that only crash together. A Chaos agent reads the code path, proposes the compound payload deliberately, and a Developer agent patches it — all orchestrated by a LangGraph loop with Docker-isolated verification.
 
-| Dimension | Brute-force / schema fuzzer | Chaos QA Swarm |
+---
+
+## At a glance
+
+| | Traditional schema fuzzer | Chaos QA Swarm |
 | --- | --- | --- |
-| **Input** | OpenAPI / JSON Schema types | `target_app/` source code branches |
-| **Payload strategy** | Random/mutation within types | Hypothesis-first compound conditions |
+| **Input** | OpenAPI / JSON types | `target_app/` source code |
+| **Strategy** | Random mutation | Hypothesis-first compound conditions |
 | **Trap discovery** | Low for logic-only bugs | Targets unhandled branches (div-by-zero, KeyError, logic gaps) |
 | **Remediation** | Manual | Developer agent + baseline regression gate |
-| **Observability** | Request logs | Langfuse trace per loop (node timing + token cost) |
+| **Observability** | Request logs | Langfuse traces (node timing, token cost) |
 
-**Example:** the loyalty endpoint trap requires `months_active=0` **and** `account_type=legacy` together. A schema fuzzer may hit `0` or `"legacy"` independently; white-box Chaos reads the branch and proposes the compound payload deliberately.
+**Example:** the loyalty endpoint requires `months_active=0` **and** `account_type=legacy` together. A schema fuzzer may hit `0` or `"legacy"` independently; white-box Chaos reads the branch and proposes both.
 
-Trap ground truth for maintainers lives in [`docs/VULNERABILITIES.md`](docs/VULNERABILITIES.md) — not in source comments or agent prompts.
+Trap ground truth for maintainers: [`docs/VULNERABILITIES.md`](docs/VULNERABILITIES.md) — intentionally **not** exposed to agents.
 
-## Setup
+---
 
-```bash
-cd ~/Desktop/chaos-qa-swarm
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev,full]"
-cp .env.example .env   # set GROQ_API_KEY for agents; optional LANGFUSE_* for tracing
+## Architecture
+
+```mermaid
+flowchart TB
+  subgraph outer [Exploration loop]
+    chaos["Chaos agent<br/>read source → attacks"]
+    probe["Judge probe<br/>run attacks only"]
+    chaos --> probe
+  end
+
+  subgraph inner [Remediation loop]
+    dev["Developer agent<br/>patch active failure"]
+    verify["Judge verify<br/>baselines + all attacks"]
+    dev --> verify
+    verify -->|still failing| dev
+  end
+
+  probe -->|vulnerable| dev
+  probe -->|all robust| success([success])
+  verify -->|accepted| chaos
+  verify -->|patch cap hit| stuck([stuck])
+  verify -->|exploration cap hit| capped([capped])
+  success --> END([END])
+  stuck --> END
+  capped --> END
 ```
 
-Run the app locally:
+| Layer | Package | Role |
+| --- | --- | --- |
+| **Target app** | `target_app/` | FastAPI service with 5 endpoints and compound logical traps |
+| **Judge** | `judge/` | Deterministic sandbox — runs payloads, classifies verdicts, no LLM |
+| **Agents** | `agents/` | Groq + LangChain — Chaos (attacks) and Developer (patches) |
+| **Graph** | `graph/` | LangGraph dual-loop orchestration and state machine |
+| **Observability** | `observability/` | Optional Langfuse tracing per node and LLM call |
 
-```bash
-uvicorn target_app.main:app --reload --port 8000
-```
-
-- Health: `GET http://localhost:8000/health`
-- OpenAPI: `http://localhost:8000/openapi.json`
-
-## Phase 1 — Target App
-
-- FastAPI app with 5 endpoints containing compound logical traps
-- Happy-path baseline tests that must pass after any future patch
-- Machine-readable JSON schemas under `schemas/` (API reference and Judge routing)
-
-```bash
-pytest tests/test_baseline_happy_path.py -v
-```
-
-## Phase 2 — Judge (Deterministic Sandbox)
-
-The Judge executes payloads against an isolated copy of `target_app/` and classifies outcomes without an LLM.
+### Judge verdicts
 
 | Verdict | Meaning |
 | --- | --- |
@@ -56,76 +66,175 @@ The Judge executes payloads against an isolated copy of `target_app/` and classi
 | `logic_error` | 200 but failed `response_checks` |
 | `invalid_request` | Timeout, 404, or unreachable route |
 
-Backends:
+Patches are applied as a `source_files` overlay — the Judge never mutates disk; it spins up an isolated copy with your candidate source.
 
-- **Docker** (default): real container isolation via `JUDGE_SANDBOX=docker`
-- **Local** (dev): subprocess uvicorn via `JUDGE_SANDBOX=local` — no container isolation
+---
 
-Usage:
-
-```python
-from judge.executor import evaluate_payloads
-from judge.models import PayloadRequest
-
-results = evaluate_payloads(
-    source_files={},
-    requests=[
-        PayloadRequest(
-            path="/api/loyalty/score",
-            body={"account_type": "legacy", "months_active": 0, "base_points": 100},
-        ),
-        PayloadRequest(
-            path="/api/report/aggregate",
-            body={"groups": [[], [7, 8]], "metric": "throughput"},
-            response_checks={"first_value": 7},
-        ),
-    ],
-)
-for result in results:
-    print(result.verdict, result.stack_trace)
-```
-
-Run Judge tests:
+## Quick start
 
 ```bash
-pytest tests/test_judge_criteria.py tests/test_source_overlay.py -v
-JUDGE_SANDBOX=local pytest tests/test_judge_integration.py -v -m integration
-JUDGE_SANDBOX=docker pytest tests/test_judge_integration.py -v -m integration
+git clone https://github.com/melbrbry/chaos-qa-swarm.git
+cd chaos-qa-swarm
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,full]"
+cp .env.example .env   # add GROQ_API_KEY; optional LANGFUSE_* keys
 ```
 
-Patches are applied via `source_files: dict[str, str]` overlay (see `judge/source_overlay.py`).
+Run the full autonomous loop:
 
-## Phase 3 — White-Box Agents
+```bash
+python scripts/run_swarm.py
+```
 
-LangChain + Groq agents read `target_app/` source (not `VULNERABILITIES.md`) and produce structured outputs validated with Groq **strict JSON schema** mode (`method="json_schema"`, `strict=True`).
+Linear demo (Chaos → Judge, optional single patch — no graph):
 
-| Agent | API | Output |
-| --- | --- | --- |
-| **Chaos** | `generate_attacks()` → `probe_attacks()` | 1–3 attacks per run (no padding) |
-| **Developer** | `generate_patch(source_files, failed_request, stack_trace)` | `patched_files` overlay map |
+```bash
+python scripts/run_chaos_probe.py
+python scripts/run_chaos_probe.py --patch
+```
 
-Reasoning depth is set via the Groq API parameter `reasoning_effort` (default `high`), not in system prompts.
+Run the target app standalone:
 
-### Environment variables
+```bash
+uvicorn target_app.main:app --reload --port 8000
+# GET http://localhost:8000/health
+```
+
+Both CLI scripts auto-load `.env` from the repo root.
+
+---
+
+## How the swarm works
+
+### Exploration loop
+
+1. **Chaos** reads merged patched source and emits 1–3 structured attack payloads (Groq strict JSON schema).
+2. **Judge probe** executes only those attacks against accepted `source_files`.
+3. If every attack is robust → **`success`**. Otherwise the first failure becomes `active_failure` and remediation begins.
+
+### Remediation loop
+
+1. **Developer** patches one failure at a time, merging into `candidate_source_files` (not promoted yet).
+2. **Judge verify** runs **10 baseline happy-path requests + all attack requests** against the candidate overlay.
+3. All robust → patch promoted, re-Chaos for new vectors (unless exploration cap hit → **`capped`**).
+4. Still failing → retry with rejection context until patch cap → **`stuck`**.
+
+Success means Chaos can no longer produce exploitable attacks on the accepted overlay — not merely that one patch worked.
+
+---
+
+## Tech stack
+
+- **Python 3.10+**, **FastAPI** target app
+- **LangChain + LangGraph** agent orchestration
+- **Groq** LLM with strict JSON schema structured output
+- **Docker** (default) or local subprocess for Judge sandbox isolation
+- **Langfuse** (optional) for trace spans, token usage, and run metadata
+- **pytest** with unit, integration, LLM, and Langfuse marker suites
+
+---
+
+## Project structure
+
+```
+chaos-qa-swarm/
+├── target_app/          # FastAPI app with intentional logic traps
+├── judge/               # Sandbox executor, baseline gate, verdict criteria
+├── agents/              # Chaos & Developer agents, prompts, patch validation
+├── graph/               # LangGraph nodes, routing, swarm state
+├── observability/       # Langfuse tracing helpers
+├── scripts/             # run_swarm.py, run_chaos_probe.py, export_schemas.py
+├── tests/               # Unit + integration test suites
+├── schemas/             # Machine-readable endpoint schemas
+└── docs/                # API reference, vulnerability catalog (maintainers only)
+```
+
+---
+
+## Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `GROQ_API_KEY` | — | Groq API authentication (required for agents) |
+| `GROQ_API_KEY` | — | Required for agents |
 | `CHAOS_QA_MODEL` | `openai/gpt-oss-120b` | Groq model ID |
-| `CHAOS_REASONING_EFFORT` | `medium` | Groq reasoning effort (`low` / `medium` / `high`; `high` can fail strict JSON schema on some models) |
-| `CHAOS_ATTACK_MAX` | `3` | Max attacks per chaos run |
-| `JUDGE_SANDBOX` | `docker` | `local` or `docker` for probe / Judge runs |
+| `CHAOS_REASONING_EFFORT` | `medium` | `low` / `medium` / `high` (falls back on schema failures) |
+| `CHAOS_ATTACK_MAX` | `3` | Max attacks per Chaos run |
+| `CHAOS_MAX_PATCH_ITERATIONS` | `3` | Inner remediation attempts per round |
+| `CHAOS_MAX_EXPLORATION_ROUNDS` | `3` | Re-Chaos cycles after successful verifies |
+| `JUDGE_SANDBOX` | `docker` | `docker` (isolated container) or `local` (dev subprocess) |
+| `LANGFUSE_PUBLIC_KEY` | — | Optional tracing |
+| `LANGFUSE_SECRET_KEY` | — | Optional tracing |
+| `LANGFUSE_HOST` | `https://cloud.langfuse.com` | Langfuse Cloud base URL |
+| `LANGFUSE_ENABLED` | auto | Set `0` to force disable |
 
-### Programmatic usage
+For local development without Docker:
+
+```bash
+JUDGE_SANDBOX=local python scripts/run_swarm.py
+```
+
+---
+
+## Observability
+
+When Langfuse keys are set, `run_swarm.py` validates credentials before starting and attaches nested spans:
+
+| Span | Contents |
+| --- | --- |
+| `chaos-qa-swarm-run` | Session id, final status, exploration/patch counts |
+| `chaos` | Attack count, analysis notes, Groq token usage |
+| `judge_probe` | Request/failure counts, active failure path |
+| `developer` | Patch iteration, failure kind, rejection context |
+| `judge_verify` | Baseline + attack counts, accepted flag |
+
+Filter by tag **`chaos-qa-swarm`** in the Langfuse UI. Tracing is silently disabled when keys are missing or invalid — the swarm runs unchanged.
+
+---
+
+## Testing
+
+```bash
+# Unit tests (no API keys, no Docker)
+pytest tests/ -m "not integration and not llm and not langfuse"
+
+# Judge integration (pick one backend)
+JUDGE_SANDBOX=local pytest tests/test_judge_integration.py -m integration
+JUDGE_SANDBOX=docker pytest tests/test_judge_integration.py -m integration
+
+# Full graph integration
+JUDGE_SANDBOX=local pytest tests/test_graph_integration.py -m integration
+
+# Live Groq / Langfuse (requires keys)
+pytest tests/ -m llm
+pytest tests/ -m langfuse
+```
+
+Baseline happy-path tests (must pass after any patch):
+
+```bash
+pytest tests/test_baseline_happy_path.py -v
+```
+
+---
+
+## Programmatic usage
+
+```python
+from graph import build_graph, initial_state
+
+final = build_graph().invoke(initial_state())
+print(final["status"], final["message"])
+```
 
 ```python
 from agents.chaos_agent import generate_attacks, probe_attacks
 from agents.developer_agent import generate_patch, merge_source_files
+from judge.executor import evaluate_payloads
+from judge.models import PayloadRequest
 
 strategy = generate_attacks()
 results = probe_attacks(strategy)
 
-# After a vulnerable result:
 patch = generate_patch(
     source_files={},
     failed_request=results[0].request,
@@ -134,258 +243,16 @@ patch = generate_patch(
 merged = merge_source_files({}, patch)
 ```
 
-### Manual probe script
+---
 
-Chaos → Judge, with optional single-patch re-eval:
+## Further reading
 
-```bash
-export GROQ_API_KEY=...
-JUDGE_SANDBOX=local python scripts/run_chaos_probe.py
-JUDGE_SANDBOX=local python scripts/run_chaos_probe.py --patch
-```
+- [`docs/API_SCHEMA.md`](docs/API_SCHEMA.md) — human-readable API reference
+- [`docs/VULNERABILITIES.md`](docs/VULNERABILITIES.md) — trap catalog (maintainers / evaluators)
+- Regenerate JSON schemas after model changes: `python scripts/export_schemas.py`
 
-With `--patch`, the script patches the **first** `vulnerable` / `logic_error` result and re-runs **only that attack payload** against the patched overlay. Use `scripts/run_swarm.py` for the full LangGraph loop with baseline regression gating.
+---
 
-### Tests
+## License
 
-Unit tests (no API key):
-
-```bash
-pytest tests/test_agents_models.py tests/test_agents_converters.py tests/test_source_bundle.py \
-  tests/test_developer_validation.py tests/test_llm.py tests/test_chaos_agent.py \
-  tests/test_developer_agent.py -v
-```
-
-Optional live Groq test:
-
-```bash
-pytest tests/test_agents_live.py -v -m llm
-```
-
-## Phase 4 — LangGraph Swarm Loop
-
-Autonomous **exploration + remediation** wired in [`graph/`](graph/) with LangGraph. Phase 3 agents and the Judge are unchanged; the graph orchestrates when they run and what state passes between nodes.
-
-### Full architecture
-
-```mermaid
-flowchart TB
-  subgraph outer [Outer loop — exploration]
-    chaos[chaos: generate_attacks]
-    judge_probe[judge_probe: evaluate attacks only]
-    chaos --> judge_probe
-  end
-
-  subgraph inner [Inner loop — remediation]
-    developer[developer: generate_patch]
-    judge_verify[judge_verify: baselines + all attacks]
-    developer --> judge_verify
-    judge_verify -->|patch rejected| developer
-  end
-
-  judge_probe -->|no failures| success([success])
-  judge_probe -->|active_failure| developer
-  judge_verify -->|all robust, under cap| chaos
-  judge_verify -->|all robust, cap hit| capped([capped])
-  judge_verify -->|patch cap exhausted| stuck([stuck])
-
-  success --> endNode([END])
-  capped --> endNode
-  stuck --> endNode
-```
-
-```mermaid
-stateDiagram-v2
-  [*] --> chaos
-  chaos --> judge_probe: new strategy
-  judge_probe --> success: no failures
-  judge_probe --> developer: active_failure
-  developer --> judge_verify: candidate patch
-  judge_verify --> developer: still failing under patch cap
-  judge_verify --> stuck: patch_iteration >= max
-  judge_verify --> chaos: verify passed re_explore
-  judge_verify --> capped: verify passed exploration cap hit
-  success --> [*]
-  stuck --> [*]
-  capped --> [*]
-```
-
-| Component | Package | Role |
-| --- | --- | --- |
-| **Chaos** | `agents/chaos_agent.py` | `generate_attacks(source_files=…)` — reads merged patched source on re-explore |
-| **Developer** | `agents/developer_agent.py` | `generate_patch(…, rejection_context=…)` — one failure per call; retry feedback after verify |
-| **Judge probe** | `graph/nodes.py` | Runs **attack requests only** against accepted `source_files` |
-| **Judge verify** | `graph/nodes.py` | Runs **baseline requests + all attack requests** against **candidate** overlay |
-| **Baseline gate** | `judge/baseline.py` | 10 happy-path `PayloadRequest`s with `response_checks` |
-| **Graph** | `graph/graph.py` | `build_graph()` — dual-loop routing |
-
-### Dual loops
-
-| Loop | Nodes | Purpose |
-| --- | --- | --- |
-| **Outer (exploration)** | `chaos` → `judge_probe` | Re-read patched source; discover new attack vectors |
-| **Inner (remediation)** | `developer` → `judge_verify` | Fix one `active_failure` per developer call; prove patch via full verify |
-
-Re-Chaos runs after **verify accepts** a patch (all baselines + attacks robust), unless `CHAOS_MAX_EXPLORATION_ROUNDS` is reached.
-
-### How failures are handled
-
-**Probe** (`judge_probe`) — entry into remediation:
-
-- Evaluates only the current chaos `attack_requests`.
-- Sets **one** `active_failure`: the first `vulnerable` / `logic_error` result.
-- Routes to `developer` or ends with `success` if none fail.
-
-**Verify** (`judge_verify`) — gate before accepting a patch:
-
-- Evaluates `baseline_requests() + attack_requests` in one Judge session.
-- A patch is **promoted** to `source_files` only when **every** row is robust.
-- If anything fails, **one primary failure** drives the next developer call (priority: baseline regression → attack → startup). Other failures are listed in `PatchRejectionContext.other_failures`.
-- A **second** attack that failed on probe but was not `active_failure` can surface here in the **same inner loop** after the first patch — verify re-runs all attacks without waiting for re-Chaos.
-
-**Developer** — one target per invocation:
-
-- Input: `active_failure` (`failed_request` + stack trace) and optional `PatchRejectionContext` on retries.
-- Output: candidate overlay merged into `candidate_source_files` (not promoted until verify passes).
-
-### Terminal status
-
-| Status | When |
-| --- | --- |
-| `success` | `judge_probe` finds no exploitable attacks (Chaos attacks all robust on current source) |
-| `stuck` | Inner loop hits `CHAOS_MAX_PATCH_ITERATIONS` without verify passing |
-| `capped` | Verify passed but `CHAOS_MAX_EXPLORATION_ROUNDS` reached (no further re-Chaos) |
-
-Success means Chaos can no longer produce exploitable attacks on the accepted overlay — not merely that one patch worked.
-
-### Environment variables
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `CHAOS_MAX_PATCH_ITERATIONS` | `3` | Inner remediation attempts per exploration round |
-| `CHAOS_MAX_EXPLORATION_ROUNDS` | `3` | Re-Chaos cycles after successful verifies |
-
-(Plus Phase 3 vars: `GROQ_API_KEY`, `CHAOS_QA_MODEL`, `CHAOS_REASONING_EFFORT`, `CHAOS_ATTACK_MAX`, `JUDGE_SANDBOX`.)
-
-### Run the swarm
-
-```bash
-export GROQ_API_KEY=...
-JUDGE_SANDBOX=local python scripts/run_swarm.py
-```
-
-Programmatic:
-
-```python
-from graph import build_graph, initial_state
-
-final_state = build_graph().invoke(initial_state())
-print(final_state["status"], final_state["message"])
-```
-
-Phase 3 linear demo (no graph, no baseline gate): `python scripts/run_chaos_probe.py`
-
-### Tests
-
-```bash
-pytest tests/test_graph_routing.py tests/test_graph_nodes.py tests/test_baseline_requests.py -v
-JUDGE_SANDBOX=local pytest tests/test_graph_integration.py -v -m integration
-```
-
-## Phase 5 — Observability (Langfuse)
-
-Optional **Langfuse Cloud** tracing for portfolio demos: nested spans per graph node, Groq token usage on Chaos/Developer LLM calls, and run metadata (exploration round, patch iteration, terminal status). Tracing is **off** when `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` are unset — the swarm runs unchanged.
-
-### Setup
-
-1. Create a project at [Langfuse Cloud](https://cloud.langfuse.com) and copy API keys.
-2. Add to `.env`:
-
-```bash
-LANGFUSE_PUBLIC_KEY=pk-lf-...
-LANGFUSE_SECRET_KEY=sk-lf-...
-# LANGFUSE_HOST=https://cloud.langfuse.com   # default
-# LANGFUSE_ENABLED=0                         # force disable
-```
-
-3. Install observability extras (included in `[full]`):
-
-```bash
-pip install -e ".[full]"
-```
-
-### Run with tracing
-
-```bash
-export GROQ_API_KEY=...
-export LANGFUSE_PUBLIC_KEY=...
-export LANGFUSE_SECRET_KEY=...
-JUDGE_SANDBOX=local python scripts/run_swarm.py
-```
-
-The CLI prints a Langfuse URL hint and flushes events before exit. In the UI, filter by tag **`chaos-qa-swarm`**.
-
-### What you see in Langfuse
-
-| Span | Contents |
-| --- | --- |
-| **`chaos-qa-swarm-run`** (root) | Session id, final status, exploration/patch counts, `JUDGE_SANDBOX` |
-| **`chaos`** | Attack count, truncated analysis notes, nested Groq generation (tokens/latency) |
-| **`judge_probe`** | Request/failure counts, active failure path |
-| **`developer`** | Patch iteration, failure kind, rejection context flag + Groq generation |
-| **`judge_verify`** | Baseline + attack counts, pass/fail, accepted flag |
-
-Span metadata intentionally avoids full source or patch bodies — only paths, counts, and verdicts.
-
-### Architecture
-
-```mermaid
-flowchart TB
-  subgraph entry [run_swarm entry]
-    observeRoot["@observe chaos-qa-swarm-run"]
-    handler[CallbackHandler on graph invoke]
-  end
-
-  subgraph graph [LangGraph nodes]
-    chaosNode["@observe chaos"]
-    probeNode["@observe judge_probe"]
-    devNode["@observe developer"]
-    verifyNode["@observe judge_verify"]
-  end
-
-  subgraph llm [LLM calls]
-    groq["ChatGroq via invoke_structured"]
-  end
-
-  observeRoot --> handler
-  handler --> graph
-  chaosNode --> groq
-  devNode --> groq
-  groq --> langfuseUI[Langfuse Cloud UI]
-  graph --> langfuseUI
-```
-
-Implementation: [`observability/langfuse_tracing.py`](observability/langfuse_tracing.py), `@observe` on [`graph/nodes.py`](graph/nodes.py), `CallbackHandler` attached at graph compile / invoke in [`graph/graph.py`](graph/graph.py) and [`scripts/run_swarm.py`](scripts/run_swarm.py).
-
-### Tests
-
-```bash
-pytest tests/test_langfuse_tracing.py -v
-pytest tests/ -m "not integration and not llm and not langfuse"
-```
-
-Optional live trace (requires keys):
-
-```bash
-pytest tests/ -m langfuse
-```
-
-## API reference
-
-Human-readable docs: [`docs/API_SCHEMA.md`](docs/API_SCHEMA.md)
-
-Regenerate `schemas/` after changing Pydantic models:
-
-```bash
-python scripts/export_schemas.py
-```
+Portfolio / demonstration project. See repository for usage terms.
