@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, WithJsonSchema, field_validator
+from pydantic import BaseModel, Field, WithJsonSchema, field_validator, model_validator
 
 from agents.config import get_attack_max
+from agents.patch_validation import normalize_source_content
 from judge.models import EvaluationResult
 
 
@@ -27,11 +28,11 @@ def _parse_json_object(value: Any) -> dict[str, Any]:
 class AttackPayload(BaseModel):
   """HTTP payload targeting a specific API route."""
 
-  method: str = "POST"
+  method: str
   path: str
   body: Annotated[
     dict[str, Any],
-    Field(default_factory=dict),
+    Field(...),
     WithJsonSchema(
       {
         "type": "string",
@@ -39,6 +40,16 @@ class AttackPayload(BaseModel):
       }
     ),
   ]
+
+  @model_validator(mode="before")
+  @classmethod
+  def apply_defaults(cls, data: Any) -> Any:
+    if isinstance(data, dict):
+      if not data.get("method"):
+        data = {**data, "method": "POST"}
+      if "body" not in data or data["body"] is None:
+        data = {**data, "body": {}}
+    return data
 
   @field_validator("body", mode="before")
   @classmethod
@@ -57,8 +68,15 @@ class AttackVector(BaseModel):
 class ChaosStrategy(BaseModel):
   """Collection of high-confidence attacks from white-box analysis."""
 
-  analysis_notes: str = ""
+  analysis_notes: str
   attacks: list[AttackVector] = Field(min_length=1)
+
+  @model_validator(mode="before")
+  @classmethod
+  def apply_defaults(cls, data: Any) -> Any:
+    if isinstance(data, dict) and "analysis_notes" not in data:
+      data = {**data, "analysis_notes": ""}
+    return data
 
   @field_validator("attacks")
   @classmethod
@@ -69,27 +87,54 @@ class ChaosStrategy(BaseModel):
     return attacks
 
 
+class PatchedFileEntry(BaseModel):
+  """Single patched file returned by the developer LLM."""
+
+  path: str
+  content: str
+
+  @field_validator("content", mode="before")
+  @classmethod
+  def normalize_content(cls, value: Any) -> str:
+    return normalize_source_content(str(value))
+
+
+class DeveloperPatchOutput(BaseModel):
+  """Structured LLM output for developer patches (Groq strict-safe)."""
+
+  thought_process: str
+  patched_files: list[PatchedFileEntry] = Field(min_length=1)
+
+
 class DeveloperPatch(BaseModel):
   """Patch proposal from the developer agent."""
 
   thought_process: str
-  patched_files: Annotated[
-    dict[str, str],
-    WithJsonSchema(
-      {
-        "type": "string",
-        "description": (
-          "JSON object mapping target_app/ relative paths to full updated file contents"
-        ),
-      }
-    ),
-  ]
+  patched_files: dict[str, str]
+
+  @classmethod
+  def from_output(cls, output: DeveloperPatchOutput) -> DeveloperPatch:
+    return cls(
+      thought_process=output.thought_process,
+      patched_files={entry.path: entry.content for entry in output.patched_files},
+    )
 
   @field_validator("patched_files", mode="before")
   @classmethod
   def parse_patched_files(cls, value: Any) -> dict[str, str]:
+    if isinstance(value, list):
+      parsed: dict[str, str] = {}
+      for entry in value:
+        if isinstance(entry, dict):
+          parsed[str(entry["path"])] = normalize_source_content(str(entry["content"]))
+        else:
+          parsed[str(entry.path)] = entry.content
+      return parsed
     parsed = _parse_json_object(value)
-    return {str(key): str(content) for key, content in parsed.items()}
+    return {
+      str(key): normalize_source_content(str(content))
+      for key, content in parsed.items()
+    }
 
 
 class PatchRejectionContext(BaseModel):

@@ -149,6 +149,19 @@ class DockerSandbox:
         f"Failed to inject overlay into container.\nstdout:\n{stdout}\nstderr:\n{stderr}"
       )
 
+    import_check = self._container.exec_run(
+      ["python", "-c", "import target_app.main"],
+      environment={"PYTHONPATH": "/app"},
+    )
+    if import_check.exit_code != 0:
+      stdout, stderr = self.logs()
+      import_error = import_check.output.decode("utf-8", errors="replace")
+      self.stop()
+      raise RuntimeError(
+        "Docker sandbox failed to import patched target_app.\n"
+        f"import_check:\n{import_error}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+      )
+
     self._container.exec_run(
       [
         "uvicorn",

@@ -6,7 +6,7 @@ import os
 
 DEFAULT_MODEL = "openai/gpt-oss-120b"
 DEFAULT_ATTACK_MAX = 3
-DEFAULT_REASONING_EFFORT = "high"
+DEFAULT_REASONING_EFFORT = "medium"
 
 
 def get_groq_api_key() -> str | None:

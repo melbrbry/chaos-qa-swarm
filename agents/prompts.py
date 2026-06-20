@@ -10,6 +10,8 @@ Return a structured response with:
 
 Rules:
 - Each attack must include vulnerable_line_number, hypothesis (reasoning BEFORE the payload), and payload (method, path, body).
+- payload.method is usually "POST".
+- payload.body must be a JSON-encoded STRING (for example: '{{"account_type": "legacy", "months_active": 0}}'), not a nested JSON object.
 - Use only endpoint paths from the provided endpoint catalog.
 - Compound trigger conditions must be justified by specific source lines.
 - Do not invent request fields absent from the Pydantic models in source.
@@ -24,7 +26,7 @@ Rewrite the vulnerable code to handle this specific edge case gracefully (valida
 
 Rules:
 - Return thought_process explaining the minimal fix.
-- Return patched_files: a map of relative paths (under target_app/) to FULL updated file contents.
+- Return patched_files: a list of objects, each with path (under target_app/) and content (FULL updated file source with real newlines, not \\n escapes).
 - Only include files you changed.
 - Preserve happy-path behavior and core business logic.
 - Do not refactor unrelated code.

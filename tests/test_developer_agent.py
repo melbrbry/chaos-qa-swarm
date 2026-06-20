@@ -1,7 +1,7 @@
 """Developer agent tests with mocked LLM."""
 
 from agents.developer_agent import generate_patch, merge_source_files
-from agents.models import DeveloperPatch
+from agents.models import DeveloperPatch, DeveloperPatchOutput, PatchedFileEntry
 from judge.models import PayloadRequest
 
 
@@ -17,11 +17,16 @@ class FakeStructuredLLM:
 
 
 def test_generate_patch_validates_paths() -> None:
-  patch = DeveloperPatch(
+  patch_output = DeveloperPatchOutput(
     thought_process="Add guard for zero months",
-    patched_files={"target_app/routes/loyalty.py": "def fixed(): pass"},
+    patched_files=[
+      PatchedFileEntry(
+        path="target_app/routes/loyalty.py",
+        content="def fixed(): pass",
+      )
+    ],
   )
-  llm = FakeStructuredLLM(patch)
+  llm = FakeStructuredLLM(patch_output)
   result = generate_patch(
     source_files={},
     failed_request=PayloadRequest(

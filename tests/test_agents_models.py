@@ -55,6 +55,21 @@ def test_attack_payload_parses_json_string_body() -> None:
     }
   )
   assert payload.body["account_type"] == "legacy"
+  assert payload.method == "POST"
+
+
+def test_attack_payload_json_schema_requires_all_properties() -> None:
+  schema = AttackPayload.model_json_schema()
+  properties = set(schema["properties"])
+  required = set(schema["required"])
+  assert properties == required
+
+
+def test_chaos_strategy_json_schema_requires_all_properties() -> None:
+  schema = ChaosStrategy.model_json_schema()
+  properties = set(schema["properties"])
+  required = set(schema["required"])
+  assert properties == required
 
 
 def test_developer_patch_parses_json_string_files() -> None:

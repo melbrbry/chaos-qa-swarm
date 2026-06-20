@@ -7,7 +7,7 @@ from typing import Any
 
 from agents.endpoints import load_endpoint_catalog
 from agents.llm import build_chat_model, invoke_structured
-from agents.models import DeveloperPatch, PatchRejectionContext
+from agents.models import DeveloperPatch, DeveloperPatchOutput, PatchRejectionContext
 from agents.patch_validation import validate_patch_files
 from agents.prompts import DEVELOPER_SYSTEM_PROMPT
 from agents.source_bundle import build_source_context, load_source_files
@@ -97,15 +97,30 @@ def generate_patch(
     f"```json\n{catalog}\n```"
   )
   model = llm or build_chat_model()
-  patch = invoke_structured(
-    model,
-    DeveloperPatch,
-    system_prompt=DEVELOPER_SYSTEM_PROMPT,
-    human_prompt=human_prompt,
-    config=config,
-  )
-  patch.patched_files = validate_patch_files(patch.patched_files)
-  return patch
+  prompt = human_prompt
+  last_error: Exception | None = None
+  for attempt in range(2):
+    try:
+      output = invoke_structured(
+        model,
+        DeveloperPatchOutput,
+        system_prompt=DEVELOPER_SYSTEM_PROMPT,
+        human_prompt=prompt,
+        config=config,
+      )
+      patch = DeveloperPatch.from_output(output)
+      patch.patched_files = validate_patch_files(patch.patched_files)
+      return patch
+    except SyntaxError as exc:
+      last_error = exc
+      prompt = (
+        f"{human_prompt}\n\n## Patch Rejected\n\n"
+        f"The previous patched_files content was invalid Python: {exc}. "
+        "Return syntactically valid source with real newlines and preserve required "
+        "module exports such as `router`."
+      )
+  assert last_error is not None
+  raise last_error
 
 
 def merge_source_files(

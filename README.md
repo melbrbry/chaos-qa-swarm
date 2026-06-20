@@ -112,7 +112,7 @@ Reasoning depth is set via the Groq API parameter `reasoning_effort` (default `h
 | --- | --- | --- |
 | `GROQ_API_KEY` | — | Groq API authentication (required for agents) |
 | `CHAOS_QA_MODEL` | `openai/gpt-oss-120b` | Groq model ID |
-| `CHAOS_REASONING_EFFORT` | `high` | Groq reasoning effort (`low` / `medium` / `high`) |
+| `CHAOS_REASONING_EFFORT` | `medium` | Groq reasoning effort (`low` / `medium` / `high`; `high` can fail strict JSON schema on some models) |
 | `CHAOS_ATTACK_MAX` | `3` | Max attacks per chaos run |
 | `JUDGE_SANDBOX` | `docker` | `local` or `docker` for probe / Judge runs |
 
